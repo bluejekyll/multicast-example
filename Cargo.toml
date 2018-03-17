@@ -1,0 +1,9 @@
+[package]
+name = "multicast-example"
+version = "0.1.0"
+authors = ["Benjamin Fry <benjaminfry@me.com>"]
+
+[dependencies]
+
+lazy_static = "1.0"
+socket2 = { version = "0.3.4", features = ["reuseport"] }
