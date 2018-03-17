@@ -7,15 +7,62 @@
 extern crate lazy_static;
 extern crate socket2;
 
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 pub const PORT: u16 = 7645;
 lazy_static! {
     pub static ref IPV4: IpAddr = Ipv4Addr::new(224, 0, 0, 123).into();
     pub static ref IPV6: IpAddr = Ipv6Addr::new(0xFF02, 0, 0, 0, 0, 0, 0, 0x0123).into();
+}
+
+// this will be common for all our sockets
+fn new_socket(addr: &SocketAddr) -> io::Result<Socket> {
+    let domain = if addr.is_ipv4() {
+        Domain::ipv4()
+    } else {
+        Domain::ipv6()
+    };
+
+    let socket = Socket::new(domain, Type::dgram(), Some(Protocol::udp()))?;
+
+    // we're going to use read timeouts so that we don't hang waiting for packets
+    socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+
+    Ok(socket)
+}
+
+fn join_multicast(addr: SocketAddr) -> io::Result<Socket> {
+    let ip_addr = addr.ip();
+
+    let socket = new_socket(&addr)?;
+
+    // depending on the IP protocol we have slightly different work
+    match ip_addr {
+        IpAddr::V4(ref mdns_v4) => {
+            // join to the multicast address, with all interfaces
+            socket.join_multicast_v4(mdns_v4, &Ipv4Addr::new(0, 0, 0, 0))?;
+
+            // this allows multicast packets to be delivered to localhost when sent from localhost
+            socket.set_multicast_loop_v4(true)?;
+        }
+        IpAddr::V6(ref mdns_v6) => {
+            // join to the multicast address, with all interfaces (ipv6 uses indexes not addresses)
+            socket.join_multicast_v6(mdns_v6, 0)?;
+            socket.set_multicast_loop_v6(true)?;
+            socket.set_only_v6(true)?;
+        }
+    };
+
+    // bind us to the socket address.
+    socket.bind(&SockAddr::from(addr))?;
+    Ok(socket)
 }
 
 fn multicast_listener(
@@ -31,6 +78,8 @@ fn multicast_listener(
         .name(format!("{}:server", response))
         .spawn(move || {
             // socket creation will go here...
+            let listener = join_multicast(addr);
+            println!("{}:server: joined: {}", response, addr);
 
             server_barrier.wait();
             println!("{}:server: is ready", response);
