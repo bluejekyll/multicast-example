@@ -48,14 +48,10 @@ fn join_multicast(addr: SocketAddr) -> io::Result<Socket> {
         IpAddr::V4(ref mdns_v4) => {
             // join to the multicast address, with all interfaces
             socket.join_multicast_v4(mdns_v4, &Ipv4Addr::new(0, 0, 0, 0))?;
-
-            // this allows multicast packets to be delivered to localhost when sent from localhost
-            socket.set_multicast_loop_v4(true)?;
         }
         IpAddr::V6(ref mdns_v6) => {
             // join to the multicast address, with all interfaces (ipv6 uses indexes not addresses)
             socket.join_multicast_v6(mdns_v6, 0)?;
-            socket.set_multicast_loop_v6(true)?;
             socket.set_only_v6(true)?;
         }
     };
@@ -97,6 +93,24 @@ fn multicast_listener(
     join_handle
 }
 
+fn new_sender(addr: &SocketAddr) -> io::Result<Socket> {
+    let socket = new_socket(addr)?;
+
+    if addr.is_ipv4() {
+        socket.bind(&SockAddr::from(SocketAddr::new(
+            Ipv4Addr::new(0, 0, 0, 0).into(),
+            0,
+        )))?;
+    } else {
+        socket.bind(&SockAddr::from(SocketAddr::new(
+            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(),
+            0,
+        )))?;
+    }
+
+    Ok(socket)
+}
+
 /// This will guarantee we always tell the server to stop
 struct NotifyServer(Arc<AtomicBool>);
 impl Drop for NotifyServer {
@@ -117,6 +131,14 @@ fn test_multicast(test: &'static str, addr: IpAddr) {
 
     // client test code send and receive code after here
     println!("{}:client: running", test);
+
+    let message = b"Hello from client!";
+
+    // create the sending socket
+    let socket = new_sender(&addr).expect("could not create sender!");
+    socket
+        .send_to(message, &SockAddr::from(addr))
+        .expect("could not send_to!");
 }
 
 #[test]
