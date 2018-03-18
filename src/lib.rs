@@ -8,7 +8,7 @@ extern crate lazy_static;
 extern crate socket2;
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -38,7 +38,7 @@ fn new_socket(addr: &SocketAddr) -> io::Result<Socket> {
     Ok(socket)
 }
 
-fn join_multicast(addr: SocketAddr) -> io::Result<Socket> {
+fn join_multicast(addr: SocketAddr) -> io::Result<UdpSocket> {
     let ip_addr = addr.ip();
 
     let socket = new_socket(&addr)?;
@@ -58,7 +58,9 @@ fn join_multicast(addr: SocketAddr) -> io::Result<Socket> {
 
     // bind us to the socket address.
     socket.bind(&SockAddr::from(addr))?;
-    Ok(socket)
+
+    // convert to standard sockets
+    Ok(socket.into_udp_socket())
 }
 
 fn multicast_listener(
@@ -74,7 +76,7 @@ fn multicast_listener(
         .name(format!("{}:server", response))
         .spawn(move || {
             // socket creation will go here...
-            let listener = join_multicast(addr);
+            let listener = join_multicast(addr).expect("failed to create listener");
             println!("{}:server: joined: {}", response, addr);
 
             server_barrier.wait();
@@ -82,7 +84,37 @@ fn multicast_listener(
 
             // We'll be looping until the client indicates it is done.
             while !client_done.load(std::sync::atomic::Ordering::Relaxed) {
-                // test recieve and response code will go here...
+                // test receive and response code will go here...
+                let mut buf = [0u8; 64]; // receive buffer
+
+                // we're assuming failures were timeouts, the client_done loop will stop us
+                match listener.recv_from(&mut buf) {
+                    Ok((len, remote_addr)) => {
+                        let data = &buf[..len];
+
+                        println!(
+                            "{}:server: got data: {} from: {}",
+                            response,
+                            String::from_utf8_lossy(data),
+                            remote_addr
+                        );
+
+                        // create a socket to send the response
+                        let responder = new_socket(&remote_addr)
+                            .expect("failed to create responder")
+                            .into_udp_socket();
+
+                        // we send the response that was set at the method beginning
+                        responder
+                            .send_to(response.as_bytes(), &remote_addr)
+                            .expect("failed to respond");
+
+                        println!("{}:server: sent response to: {}", response, remote_addr);
+                    }
+                    Err(err) => {
+                        println!("{}:server: got an error: {}", response, err);
+                    }
+                }
             }
 
             println!("{}:server: client is done", response);
@@ -93,7 +125,7 @@ fn multicast_listener(
     join_handle
 }
 
-fn new_sender(addr: &SocketAddr) -> io::Result<Socket> {
+fn new_sender(addr: &SocketAddr) -> io::Result<UdpSocket> {
     let socket = new_socket(addr)?;
 
     if addr.is_ipv4() {
@@ -112,7 +144,8 @@ fn new_sender(addr: &SocketAddr) -> io::Result<Socket> {
         )))?;
     }
 
-    Ok(socket)
+    // convert to standard sockets...
+    Ok(socket.into_udp_socket())
 }
 
 /// This will guarantee we always tell the server to stop
@@ -129,7 +162,7 @@ fn test_multicast(test: &'static str, addr: IpAddr) {
     let addr = SocketAddr::new(addr, PORT);
 
     let client_done = Arc::new(AtomicBool::new(false));
-    NotifyServer(Arc::clone(&client_done));
+    let notify = NotifyServer(Arc::clone(&client_done));
 
     multicast_listener(test, client_done, addr);
 
@@ -140,9 +173,28 @@ fn test_multicast(test: &'static str, addr: IpAddr) {
 
     // create the sending socket
     let socket = new_sender(&addr).expect("could not create sender!");
-    socket
-        .send_to(message, &SockAddr::from(addr))
-        .expect("could not send_to!");
+    socket.send_to(message, &addr).expect("could not send_to!");
+
+    let mut buf = [0u8; 64]; // receive buffer
+
+    match socket.recv_from(&mut buf) {
+        Ok((len, remote_addr)) => {
+            let data = &buf[..len];
+            let response = String::from_utf8_lossy(data);
+
+            println!("{}:client: got data: {}", test, response);
+
+            // verify it's what we expected
+            assert_eq!(test, response);
+        }
+        Err(err) => {
+            println!("{}:client: had a problem: {}", test, err);
+            assert!(false);
+        }
+    }
+
+    // make sure we don't notify the server until the end of the client test
+    drop(notify);
 }
 
 #[test]
