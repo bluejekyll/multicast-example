@@ -38,6 +38,26 @@ fn new_socket(addr: &SocketAddr) -> io::Result<Socket> {
     Ok(socket)
 }
 
+/// On Windows, unlike all Unix variants, it is improper to bind to the multicast address
+///
+/// see https://msdn.microsoft.com/en-us/library/windows/desktop/ms737550(v=vs.85).aspx
+#[cfg(windows)]
+fn bind_multicast(socket: &Socket, addr: &SocketAddr) -> io::Result<()> {
+    let addr = match *addr {
+        SocketAddr::V4(addr) => SocketAddr::new(Ipv4Addr::new(0, 0, 0, 0).into(), addr.port()),
+        SocketAddr::V6(addr) => {
+            SocketAddr::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(), addr.port())
+        }
+    };
+    socket.bind(&socket2::SockAddr::from(addr))
+}
+
+/// On unixes we bind to the multicast address, which causes multicast packets to be filtered
+#[cfg(unix)]
+fn bind_multicast(socket: &Socket, addr: &SocketAddr) -> io::Result<()> {
+    socket.bind(&socket2::SockAddr::from(*addr))
+}
+
 fn join_multicast(addr: SocketAddr) -> io::Result<UdpSocket> {
     let ip_addr = addr.ip();
 
@@ -57,7 +77,7 @@ fn join_multicast(addr: SocketAddr) -> io::Result<UdpSocket> {
     };
 
     // bind us to the socket address.
-    socket.bind(&SockAddr::from(addr))?;
+    bind_multicast(&socket, &addr)?;
 
     // convert to standard sockets
     Ok(socket.into_udp_socket())
@@ -136,6 +156,8 @@ fn new_sender(addr: &SocketAddr) -> io::Result<UdpSocket> {
             0,
         )))?;
     } else {
+        // *WARNING* THIS IS SPECIFIC TO THE AUTHORS COMPUTER
+        //   find the index of your IPv6 interface you'd like to test with.
         socket.set_multicast_if_v6(5)?;
 
         socket.bind(&SockAddr::from(SocketAddr::new(
