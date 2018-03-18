@@ -97,11 +97,15 @@ fn new_sender(addr: &SocketAddr) -> io::Result<Socket> {
     let socket = new_socket(addr)?;
 
     if addr.is_ipv4() {
+        socket.set_multicast_if_v4(&Ipv4Addr::new(0, 0, 0, 0))?;
+
         socket.bind(&SockAddr::from(SocketAddr::new(
             Ipv4Addr::new(0, 0, 0, 0).into(),
             0,
         )))?;
     } else {
+        socket.set_multicast_if_v6(5)?;
+
         socket.bind(&SockAddr::from(SocketAddr::new(
             Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(),
             0,
