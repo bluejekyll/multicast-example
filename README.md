@@ -1,0 +1,1 @@
+This repo is the example used for the [multicasting in rust](https://bluejekyll.github.io/blog/rust/2018/03/18/multicasting-in-rust.html) post.
